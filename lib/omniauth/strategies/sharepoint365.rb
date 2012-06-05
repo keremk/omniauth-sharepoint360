@@ -4,6 +4,9 @@ require 'uri'
 module OmniAuth
   module Strategies
     class Sharepoint365
+      class MissingCredentialsError < StandardError; end
+      class AuthenticationError < StandardError; end
+
       include OmniAuth::Strategy
 
       @@request_envelope = "
@@ -59,17 +62,23 @@ module OmniAuth
         @username = request['username']
         password = request['password']
         @endpoint = request['site_url']
+        logger.info "User = #{@username}, Endpoint = #{@endpoint}"
+        begin
+          raise MissingCredentialsError.new("Missing credentials") if @username.nil? || @username.empty? || password.nil? || @endpoint.nil? || @endpoint.empty?
+          logger.info "Sending request to #{@endpoint} for user #{@username}"
+          token = get_token_from_claims_provider(@username, password, @endpoint)        
+          logger.info "Token returned = #{token}"
 
-        logger.info "Sending request to #{@endpoint} for user #{@username}"
-        token = get_token_from_claims_provider(@username, password, @endpoint)        
-        logger.info "Token returned = #{token}"
-
-        logger.info "Sending request to #{options[:sharepoint_signin_url_path]}"
-        @authentication_cookies = authenticate_with_token(token, @endpoint)
-        logger.info "rtFa = #{@authentication_cookies[:rtFa]}"
-        logger.info "fedAuth = #{@authentication_cookies[:fedAuth]}"
+          logger.info "Sending request to #{options[:sharepoint_signin_url_path]}"
+          @authentication_cookies = authenticate_with_token(token, @endpoint)
+          logger.info "rtFa = #{@authentication_cookies[:rtFa]}"
+          logger.info "fedAuth = #{@authentication_cookies[:fedAuth]}"
  
-        super
+          super
+        rescue Exception => e 
+          logger.info e.message
+          return fail!(:sharepoint365_error, e)
+        end
       end
 
       def get_token_from_claims_provider(username, password, endpoint)
@@ -81,10 +90,15 @@ module OmniAuth
           request.headers['Content-Length'] = request_body.length.to_s
           request.body = request_body
         end
-
-        root = MultiXml.parse(response.body)
         logger = env['rack.logger']
         logger.info response.body
+
+        root = MultiXml.parse(response.body)
+        if (root['Envelope']['Body']['Fault']) 
+          error_message = root['Envelope']['Body']['Fault']['Reason']['Text']['__content__']
+          error_detail = root['Envelope']['Body']['Fault']['Detail']['error']['internalerror']['text']
+          raise AuthenticationError.new("#{error_message} - #{error_detail}")
+        end
         root['Envelope']['Body']['RequestSecurityTokenResponse']['RequestedSecurityToken']['BinarySecurityToken']['__content__']
       end
 
@@ -100,7 +114,7 @@ module OmniAuth
           req.body = token
         end
         cookies = CGI::Cookie::parse(response.headers['set-cookie'])
-
+        raise AuthenticationError.new("Sharepoint failed to authenticate with token") if cookies.nil? || cookies['rtFa'].nil? || cookies['fedAuth'].nil?
         { :rtFa => cookies['rtFa'], :fedAuth => cookies['FedAuth'] }
       end
 
