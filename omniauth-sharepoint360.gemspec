@@ -6,10 +6,10 @@ Gem::Specification.new do |s|
   s.name        = "omniauth-sharepoint360"
   s.version     = Omniauth::Sharepoint360::VERSION
   s.authors     = ["Kerem Karatal"]
-  s.email       = ["kkaratal@yahoo.com"]
+  s.email       = ["kkaratal@foo.com"]
   s.homepage    = ""
-  s.summary     = %q{TODO: Write a gem summary}
-  s.description = %q{TODO: Write a gem description}
+  s.summary     = %q{Sharepoint 360 Claims Authentication}
+  s.description = %q{OmniAuth strategy that handles Sharepoint 360 (cloud) authentication.}
 
   s.rubyforge_project = "omniauth-sharepoint360"
 

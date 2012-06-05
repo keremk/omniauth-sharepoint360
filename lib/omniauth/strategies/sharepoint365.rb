@@ -39,8 +39,8 @@ module OmniAuth
       option :fields, [:name, :site, :pass]
       option :uid_field, :name
       option :claims_provider_url, "https://login.microsoftonline.com"
-      option :claims_provider_endpoint, "/extSTS.srf"
-      option :sharepoint_signin_url_endpoint, "/_forms/default.aspx?wa=wsignin1.0"
+      option :claims_provider_path, "/extSTS.srf"
+      option :sharepoint_signin_url_path, "/_forms/default.aspx?wa=wsignin1.0"
       option :sharepoint_request_user_agent, "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Win64; x64; Trident/5.0)"
       option :http_adapter, :net_http
 
@@ -55,57 +55,61 @@ module OmniAuth
 
       def callback_phase
         logger = env['rack.logger']
-        logger.info "Hello World"
-
-        conn = Faraday.new(:url => options[:claims_provider_url]) do |builder|
-          builder.request :url_encoded
-          builder.response :logger
-          builder.adapter options[:http_adapter]
-        end 
 
         @username = request['username']
         password = request['password']
         @endpoint = request['site_url']
-        
-        logger.info "Sending request to #{@endpoint} for user #{@username}"
-        response = conn.post do |req|
-          req.url options[:claims_provider_endpoint]
-          request_body = @@request_envelope.sub(/\[username\]/, @username).sub(/\[password\]/, password).sub(/\[endpoint\]/, @endpoint)
 
-          req.headers['Content-Length'] = request_body.length.to_s
-          req.body = request_body
+        logger.info "Sending request to #{@endpoint} for user #{@username}"
+        token = get_token_from_claims_provider(@username, password, @endpoint)        
+        logger.info "Token returned = #{token}"
+
+        logger.info "Sending request to #{options[:sharepoint_signin_url_path]}"
+        @authentication_cookies = authenticate_with_token(token, @endpoint)
+        logger.info "rtFa = #{@authentication_cookies[:rtFa]}"
+        logger.info "fedAuth = #{@authentication_cookies[:fedAuth]}"
+ 
+        super
+      end
+
+      def get_token_from_claims_provider(username, password, endpoint)
+        conn = connection_for_url(options[:claims_provider_url])
+        response = conn.post do |request|
+          request.url options[:claims_provider_path]
+          request_body = @@request_envelope.sub(/\[username\]/, username).sub(/\[password\]/, password).sub(/\[endpoint\]/, endpoint)
+
+          request.headers['Content-Length'] = request_body.length.to_s
+          request.body = request_body
         end
 
         root = MultiXml.parse(response.body)
-        token = root['Envelope']['Body']['RequestSecurityTokenResponse']['RequestedSecurityToken']['BinarySecurityToken']['__content__']
-        logger.info "Token returned = #{token}"
+        logger = env['rack.logger']
+        logger.info response.body
+        root['Envelope']['Body']['RequestSecurityTokenResponse']['RequestedSecurityToken']['BinarySecurityToken']['__content__']
+      end
 
-        endpoint_uri = URI(@endpoint)
-        endpoint_host = "#{endpoint_uri.scheme}://#{endpoint_uri.host}"
-        logger.info "Endpoint Host is #{endpoint_host}"
-        conn = Faraday.new(:url => endpoint_host) do |builder|
-          builder.request :url_encoded
-          builder.response :logger
-          builder.adapter options[:http_adapter]
-        end
+      def authenticate_with_token(token, endpoint)
+        endpoint_uri = URI(endpoint)
+        endpoint_host = "#{endpoint_uri.scheme}://#{endpoint_uri.host}"        
+        conn = connection_for_url(endpoint_host)
 
-        logger.info "Sending request to #{options[:sharepoint_signin_url_endpoint]}"
         response = conn.post do |req|
-          req.url options[:sharepoint_signin_url_endpoint]
+          req.url options[:sharepoint_signin_url_path]
           req.headers['Content-Length'] = token.length.to_s
           req.headers['User-Agent'] = options[:sharepoint_request_user_agent]
           req.body = token
         end
-
         cookies = CGI::Cookie::parse(response.headers['set-cookie'])
 
-        @rtFa = cookies['rtFa']
-        @fedAuth = cookies['FedAuth']
+        { :rtFa => cookies['rtFa'], :fedAuth => cookies['FedAuth'] }
+      end
 
-        logger.info "rtFa = #{@rtFa}"
-        logger.info "fedAuth = #{@fedAuth}"
- 
-        super
+      def connection_for_url(url)
+        Faraday.new(:url => url) do |builder|
+          builder.request :url_encoded
+          builder.response :logger
+          builder.adapter options[:http_adapter]
+        end 
       end
 
       uid {
@@ -117,7 +121,7 @@ module OmniAuth
       }
 
       extra {
-        { :raw_info => { :rtFa => @rtFa, :fedAuth => @fedAuth } }
+        { :raw_info => @authentication_cookies }
       }
     end
   end
